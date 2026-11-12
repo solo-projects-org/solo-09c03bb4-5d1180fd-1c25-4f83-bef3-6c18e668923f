@@ -35,6 +35,11 @@ STATUS_LABELS = {
     "adjudicated": "复核选定 · 已核定",
 }
 
+VOID_REASON_LABELS = {
+    "entry_edited": "录入改填",
+    "image_swapped": "原图互换",
+}
+
 DEMO_ACCOUNTS = [
     ("clerk1", "录入员甲", "clerk"),
     ("clerk2", "录入员乙", "clerk"),
@@ -102,9 +107,74 @@ def close_db(_error=None) -> None:
 
 def init_db() -> None:
     db = get_db()
+    migrate_db(db)
     db.executescript((BASE_DIR / "schema.sql").read_text(encoding="utf-8"))
     db.execute("PRAGMA journal_mode = WAL")
     db.commit()
+
+
+def migrate_db(db: sqlite3.Connection) -> None:
+    """Bring databases created by earlier versions up to the current schema.
+
+    Fresh databases are created directly from schema.sql, so every step here
+    is a no-op for them. Existing volumes get the new columns/indexes without
+    losing data.
+    """
+    tables = {
+        row["name"]
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+
+    if "cards" in tables:
+        card_cols = {row["name"] for row in db.execute("PRAGMA table_info(cards)")}
+        if "image_version" not in card_cols:
+            db.execute(
+                "ALTER TABLE cards ADD COLUMN image_version INTEGER NOT NULL DEFAULT 1"
+            )
+            db.commit()
+
+    if "entries" in tables:
+        entry_cols = {row["name"] for row in db.execute("PRAGMA table_info(entries)")}
+        if "voided_at" not in entry_cols:
+            # The old table has a table-level UNIQUE(card_id, clerk_id) that
+            # would block re-entry after a swap, so rebuild it without that
+            # constraint (the partial unique index in schema.sql replaces it).
+            db.commit()
+            db.execute("PRAGMA foreign_keys = OFF")
+            try:
+                db.executescript(
+                    """
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE entries_migrated (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        card_id       INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+                        clerk_id      INTEGER NOT NULL REFERENCES users(id),
+                        station_no    TEXT    NOT NULL,
+                        obs_date      TEXT    NOT NULL,
+                        rainfall_mm   TEXT    NOT NULL,
+                        revision      INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+                        created_at    TEXT    NOT NULL,
+                        updated_at    TEXT    NOT NULL,
+                        voided_at     TEXT,
+                        voided_reason TEXT
+                    );
+                    INSERT INTO entries_migrated
+                        (id, card_id, clerk_id, station_no, obs_date, rainfall_mm,
+                         revision, created_at, updated_at)
+                        SELECT id, card_id, clerk_id, station_no, obs_date, rainfall_mm,
+                               revision, created_at, updated_at
+                        FROM entries;
+                    DROP TABLE entries;
+                    ALTER TABLE entries_migrated RENAME TO entries;
+                    COMMIT;
+                    """
+                )
+            except Exception:
+                if db.in_transaction:
+                    db.rollback()
+                raise
+            finally:
+                db.execute("PRAGMA foreign_keys = ON")
 
 
 def seed_demo_data() -> None:
@@ -134,12 +204,17 @@ def seed_demo_data() -> None:
     clerk2_id = user_ids["clerk2"]
 
     # The four paper cards deliberately show the states a new archive batch can
-    # have: empty, one-sided, in conflict, and already agreed.
+    # have: empty, one-sided, in conflict, and already agreed. The last two
+    # cards are deliberately mounted with each other's scans (0718 carries the
+    # 0719 image and vice versa) so the image-swap workflow can be exercised;
+    # their seeded entries were keyed from those wrong images.
     seed_cards = [
         ("YC-1986-0714", "sample:rain-card-001.svg"),
         ("YC-1986-0715", "sample:rain-card-002.svg"),
         ("YC-1986-0716", "sample:rain-card-003.svg"),
         ("YC-1986-0717", "sample:rain-card-004.svg"),
+        ("YC-1986-0718", "sample:rain-card-006.svg"),  # wrong scan on purpose
+        ("YC-1986-0719", "sample:rain-card-005.svg"),  # wrong scan on purpose
     ]
     card_ids: dict[str, int] = {}
     for card_no, image_filename in seed_cards:
@@ -151,14 +226,15 @@ def seed_demo_data() -> None:
         )
         card_ids[card_no] = cur.lastrowid
 
-    def add_entry(card_no: str, clerk_id: int, station: str, obs_date: str, rain: str):
-        db.execute(
+    def add_entry(card_no: str, clerk_id: int, station: str, obs_date: str, rain: str) -> int:
+        cur = db.execute(
             """INSERT INTO entries
                (card_id, clerk_id, station_no, obs_date, rainfall_mm,
                 revision, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
             (card_ids[card_no], clerk_id, station, obs_date, rain, now, now),
         )
+        return cur.lastrowid
 
     # 002: a real disagreement to demonstrate review and rejection of stale work.
     add_entry("YC-1986-0715", clerk1_id, "30501210", "1986-07-15", "31")
@@ -168,6 +244,30 @@ def seed_demo_data() -> None:
     add_entry("YC-1986-0716", clerk2_id, "30501220", "1986-07-16", "0")
     # 004: waiting for the second clerk.
     add_entry("YC-1986-0717", clerk1_id, "30501230", "1986-07-17", "88")
+    # 005/006: the scans are swapped, and the clerks keyed what the wrong
+    # images showed. 0718 even made it into the export with the other card's
+    # readings; 0719 was adjudicated against the wrong scan.
+    add_entry("YC-1986-0718", clerk1_id, "30501250", "1986-07-19", "120")
+    add_entry("YC-1986-0718", clerk2_id, "30501250", "1986-07-19", "120")
+    entry_0719_a = add_entry("YC-1986-0719", clerk1_id, "30501240", "1986-07-18", "5.5")
+    entry_0719_b = add_entry("YC-1986-0719", clerk2_id, "30501240", "1986-07-18", "55")
+    db.execute(
+        """INSERT INTO decisions
+           (card_id, reviewer_id,
+            entry_a_id, entry_a_revision, entry_b_id, entry_b_revision,
+            selected_entry_id, selected_entry_revision,
+            verified_station_no, verified_obs_date, verified_rainfall_mm,
+            created_at)
+           VALUES (?, ?, ?, 1, ?, 1, ?, 1, '30501240', '1986-07-18', '5.5', ?)""",
+        (
+            card_ids["YC-1986-0719"],
+            reviewer_id,
+            entry_0719_a,
+            entry_0719_b,
+            entry_0719_a,
+            now,
+        ),
+    )
 
     db.commit()
 
@@ -224,8 +324,11 @@ def entry_values(entry) -> tuple[str, str, str] | None:
 
 
 def get_entry(db, card_id: int, clerk_id: int):
+    """The clerk's live entry. Voided entries are invisible to entry,
+    prefill, comparison and adjudication."""
     return db.execute(
-        "SELECT * FROM entries WHERE card_id = ? AND clerk_id = ?",
+        """SELECT * FROM entries
+           WHERE card_id = ? AND clerk_id = ? AND voided_at IS NULL""",
         (card_id, clerk_id),
     ).fetchone()
 
@@ -235,6 +338,36 @@ def get_card_entries(db, card):
         get_entry(db, card["id"], card["clerk_a_id"]),
         get_entry(db, card["id"], card["clerk_b_id"]),
     )
+
+
+def get_swap_voided_entry(db, card_id: int, clerk_id: int):
+    """The clerk's most recent entry revoked by an image swap, if any."""
+    return db.execute(
+        """SELECT * FROM entries
+           WHERE card_id = ? AND clerk_id = ?
+                 AND voided_at IS NOT NULL AND voided_reason = 'image_swapped'
+           ORDER BY id DESC LIMIT 1""",
+        (card_id, clerk_id),
+    ).fetchone()
+
+
+def card_swap_history(db, card_id: int):
+    """Every scan swap this card took part in, newest first."""
+    return db.execute(
+        """SELECT s.*,
+                  u.display_name AS swapped_by_name,
+                  (SELECT c2.card_no
+                     FROM image_swaps s2
+                     JOIN cards c2 ON c2.id = s2.card_id
+                    WHERE s2.swap_group = s.swap_group
+                      AND s2.card_id != s.card_id
+                    LIMIT 1) AS other_card_no
+           FROM image_swaps s
+           JOIN users u ON u.id = s.swapped_by
+           WHERE s.card_id = ?
+           ORDER BY s.id DESC""",
+        (card_id,),
+    ).fetchall()
 
 
 def get_active_decision(db, card_id: int):
@@ -442,7 +575,11 @@ def register_routes(app: Flask) -> None:
 
     @app.context_processor
     def inject_globals():
-        return {"status_labels": STATUS_LABELS, "current_user": g.get("user")}
+        return {
+            "status_labels": STATUS_LABELS,
+            "void_reason_labels": VOID_REASON_LABELS,
+            "current_user": g.get("user"),
+        }
 
     @app.get("/")
     def index():
@@ -495,7 +632,17 @@ def register_routes(app: Flask) -> None:
             entry_a, entry_b = get_card_entries(db, card)
             own = entry_a if card["clerk_a_id"] == g.user["id"] else entry_b
             info = resolve_card(entry_a, entry_b, get_active_decision(db, card["id"]))
-            card_rows.append({"card": card, "own_entry": own, "info": info})
+            needs_reentry = own is None and get_swap_voided_entry(
+                db, card["id"], g.user["id"]
+            ) is not None
+            card_rows.append(
+                {
+                    "card": card,
+                    "own_entry": own,
+                    "info": info,
+                    "needs_reentry": needs_reentry,
+                }
+            )
         return render_template("clerk_dashboard.html", card_rows=card_rows)
 
     @app.route("/clerk/cards/<int:card_id>", methods=("GET", "POST"))
@@ -515,78 +662,110 @@ def register_routes(app: Flask) -> None:
             "rainfall_mm": own_entry["rainfall_mm"] if own_entry else "",
         }
         errors: dict[str, str] = {}
+        stale_error: str | None = None
+        http_status = 200
 
         if request.method == "POST":
             data, values, errors = parse_entry_form(request.form)
+            submitted_image_version = request.form.get("image_version", type=int)
             if not errors:
                 now = utc_now()
                 db.execute("BEGIN IMMEDIATE")
                 try:
-                    # Re-read under the write lock so an update is never lost.
-                    current_own = get_entry(db, card_id, g.user["id"])
-                    if current_own is None:
-                        cur = db.execute(
-                            """INSERT INTO entries
-                               (card_id, clerk_id, station_no, obs_date, rainfall_mm,
-                                revision, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-                            (
-                                card_id,
-                                g.user["id"],
-                                data["station_no"],
-                                data["obs_date"],
-                                data["rainfall_mm"],
-                                now,
-                                now,
-                            ),
+                    # Re-read under the write lock: the scan must still be the
+                    # one this page was rendered from. If it was swapped in
+                    # the meantime, nothing is written and the clerk is told
+                    # to refresh against the new image.
+                    current_card = db.execute(
+                        "SELECT * FROM cards WHERE id = ?", (card_id,)
+                    ).fetchone()
+                    if (
+                        submitted_image_version is None
+                        or current_card["image_version"] != submitted_image_version
+                    ):
+                        db.rollback()
+                        stale_error = (
+                            "扫描原图已经更换，本次录入没有保存。"
+                            "请刷新页面，对照换过来的新原图重新录入。"
                         )
-                        entry_id = cur.lastrowid
+                        http_status = 409
                     else:
-                        db.execute(
-                            """UPDATE entries
-                               SET station_no = ?, obs_date = ?, rainfall_mm = ?,
-                                   revision = revision + 1, updated_at = ?
-                               WHERE id = ?""",
-                            (
-                                data["station_no"],
-                                data["obs_date"],
-                                data["rainfall_mm"],
-                                now,
-                                current_own["id"],
-                            ),
-                        )
-                        entry_id = current_own["id"]
-                    # Every save is a new version. Even a save that happens to
-                    # repeat the same text revokes an earlier adjudication.
-                    void_active_decisions(db, card_id, now, entry_id)
-                    db.commit()
+                        # Re-read under the write lock so an update is never lost.
+                        current_own = get_entry(db, card_id, g.user["id"])
+                        if current_own is None:
+                            cur = db.execute(
+                                """INSERT INTO entries
+                                   (card_id, clerk_id, station_no, obs_date, rainfall_mm,
+                                    revision, created_at, updated_at)
+                                   VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                                (
+                                    card_id,
+                                    g.user["id"],
+                                    data["station_no"],
+                                    data["obs_date"],
+                                    data["rainfall_mm"],
+                                    now,
+                                    now,
+                                ),
+                            )
+                            entry_id = cur.lastrowid
+                        else:
+                            db.execute(
+                                """UPDATE entries
+                                   SET station_no = ?, obs_date = ?, rainfall_mm = ?,
+                                       revision = revision + 1, updated_at = ?
+                                   WHERE id = ?""",
+                                (
+                                    data["station_no"],
+                                    data["obs_date"],
+                                    data["rainfall_mm"],
+                                    now,
+                                    current_own["id"],
+                                ),
+                            )
+                            entry_id = current_own["id"]
+                        # Every save is a new version. Even a save that happens to
+                        # repeat the same text revokes an earlier adjudication.
+                        void_active_decisions(db, card_id, now, entry_id)
+                        db.commit()
                 except Exception:
-                    db.rollback()
+                    if db.in_transaction:
+                        db.rollback()
                     raise
 
-                entry_a, entry_b = get_card_entries(db, card)
-                result = resolve_card(
-                    entry_a, entry_b, get_active_decision(db, card_id)
-                )
-                if result["status"] == "agreed":
-                    flash("录入已保存。最新两份完全一致，卡片已自动核定。", "success")
-                elif result["status"] == "conflict":
-                    flash("录入已保存。最新两份有出入，等待复核员对照原图裁定。", "warning")
-                else:
-                    flash("录入已保存，等待另一位录入员。", "success")
-                return redirect(url_for("clerk_entry", card_id=card_id))
+                if stale_error is None:
+                    entry_a, entry_b = get_card_entries(db, card)
+                    result = resolve_card(
+                        entry_a, entry_b, get_active_decision(db, card_id)
+                    )
+                    if result["status"] == "agreed":
+                        flash("录入已保存。最新两份完全一致，卡片已自动核定。", "success")
+                    elif result["status"] == "conflict":
+                        flash("录入已保存。最新两份有出入，等待复核员对照原图裁定。", "warning")
+                    else:
+                        flash("录入已保存，等待另一位录入员。", "success")
+                    return redirect(url_for("clerk_entry", card_id=card_id))
 
+        # Re-read so a rejected stale submit already renders the swapped-in
+        # image and the current image_version for the next attempt.
+        card = db.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
         entry_a, entry_b = get_card_entries(db, card)
         own_entry = entry_a if card["clerk_a_id"] == g.user["id"] else entry_b
         info = resolve_card(entry_a, entry_b, get_active_decision(db, card_id))
-        return render_template(
+        swap_voided = None
+        if own_entry is None:
+            swap_voided = get_swap_voided_entry(db, card_id, g.user["id"])
+        response = render_template(
             "entry_form.html",
             card=card,
             own_entry=own_entry,
             info=info,
             values=values,
             errors=errors,
+            stale_error=stale_error,
+            swap_voided=swap_voided,
         )
+        return response, http_status
 
     @app.get("/reviewer")
     @role_required("reviewer")
@@ -733,6 +912,7 @@ def register_routes(app: Flask) -> None:
             if entry_a["rainfall_mm"] != entry_b["rainfall_mm"]:
                 differences.add("rainfall_mm")
         history = card_decision_history(db, card_id)
+        swaps = card_swap_history(db, card_id)
         response = render_template(
             "review_card.html",
             card=card,
@@ -742,6 +922,7 @@ def register_routes(app: Flask) -> None:
             active=active,
             differences=differences,
             history=history,
+            swaps=swaps,
             decision_error=error,
         )
         return response, http_status
@@ -757,10 +938,13 @@ def register_routes(app: Flask) -> None:
 
         # These IDs/revisions bind the submitted decision to precisely the two
         # versions the reviewer saw. If either changed, the decision is refused.
+        # image_version binds it to the scan that was on screen: if the scan
+        # was swapped since, the page is stale and nothing may be written.
         expected_a_id = request.form.get("entry_a_id", type=int)
         expected_a_revision = request.form.get("entry_a_revision", type=int)
         expected_b_id = request.form.get("entry_b_id", type=int)
         expected_b_revision = request.form.get("entry_b_revision", type=int)
+        expected_image_version = request.form.get("image_version", type=int)
         selected_entry_id = request.form.get("selected_entry_id", type=int)
 
         db.execute("BEGIN IMMEDIATE")
@@ -771,16 +955,27 @@ def register_routes(app: Flask) -> None:
                 abort(404)
             entry_a, entry_b = get_card_entries(db, card)
 
-            if entry_a is None or entry_b is None:
-                return reject("这份卡片还没有两份录入，不能裁定。")
             if None in (
                 expected_a_id,
                 expected_a_revision,
                 expected_b_id,
                 expected_b_revision,
+                expected_image_version,
                 selected_entry_id,
             ):
                 return reject("裁定依据不完整，请重新打开卡片后再试。")
+
+            # A swapped scan voids the entries too, so check the image first:
+            # the reviewer must be told to refresh against the new scan, not
+            # be handed a misleading "missing entries" message.
+            if expected_image_version != card["image_version"]:
+                return reject(
+                    "扫描原图已经更换，旧页面上的裁定已拒绝。"
+                    "请刷新页面，对照换过来的原图重新核对。"
+                )
+
+            if entry_a is None or entry_b is None:
+                return reject("这份卡片还没有两份录入，不能裁定。")
 
             if (
                 expected_a_id != entry_a["id"]
@@ -832,6 +1027,154 @@ def register_routes(app: Flask) -> None:
 
         flash("已对照原图完成核定。", "success")
         return redirect(url_for("reviewer_card", card_id=card_id))
+
+    def load_card_for_swap(card_id: int):
+        return get_db().execute(
+            """SELECT c.*,
+                      ua.display_name AS clerk_a_name,
+                      ub.display_name AS clerk_b_name
+               FROM cards c
+               JOIN users ua ON ua.id = c.clerk_a_id
+               JOIN users ub ON ub.id = c.clerk_b_id
+               WHERE c.id = ?""",
+            (card_id,),
+        ).fetchone()
+
+    def render_swap_confirm(card_a, card_b, error: str | None = None, http_status: int = 200):
+        db = get_db()
+        card_rows = []
+        for card in (card_a, card_b):
+            entry_a, entry_b = get_card_entries(db, card)
+            info = resolve_card(entry_a, entry_b, get_active_decision(db, card["id"]))
+            live_entries = sum(1 for e in (entry_a, entry_b) if e is not None)
+            has_live_decision = get_active_decision(db, card["id"]) is not None
+            card_rows.append(
+                {
+                    "card": card,
+                    "info": info,
+                    "live_entries": live_entries,
+                    "has_live_decision": has_live_decision,
+                }
+            )
+        response = render_template(
+            "swap_confirm.html", card_rows=card_rows, swap_error=error
+        )
+        return response, http_status
+
+    @app.route("/reviewer/swap", methods=("GET", "POST"))
+    @role_required("reviewer")
+    def swap_cards():
+        db = get_db()
+        if request.method == "GET":
+            selected = request.args.getlist("card", type=int)
+            if len(selected) != 2 or selected[0] == selected[1]:
+                flash("请在工作台勾选恰好两张不同的卡片，再进入互换。", "error")
+                return redirect(url_for("reviewer_dashboard"))
+            card_a = load_card_for_swap(selected[0])
+            card_b = load_card_for_swap(selected[1])
+            if card_a is None or card_b is None:
+                abort(404)
+            return render_swap_confirm(card_a, card_b)
+
+        card_a_id = request.form.get("card_a_id", type=int)
+        card_b_id = request.form.get("card_b_id", type=int)
+        version_a = request.form.get("image_version_a", type=int)
+        version_b = request.form.get("image_version_b", type=int)
+        if None in (card_a_id, card_b_id, version_a, version_b) or card_a_id == card_b_id:
+            flash("互换请求不完整，请回到工作台重新勾选两张卡片。", "error")
+            return redirect(url_for("reviewer_dashboard"))
+
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            card_a = load_card_for_swap(card_a_id)
+            card_b = load_card_for_swap(card_b_id)
+            if card_a is None or card_b is None:
+                db.rollback()
+                abort(404)
+            # The confirmation page was rendered from specific image versions.
+            # If either card's scan changed since, refuse to write and ask the
+            # reviewer to look at the current images again.
+            if card_a["image_version"] != version_a or card_b["image_version"] != version_b:
+                db.rollback()
+                return render_swap_confirm(
+                    card_a,
+                    card_b,
+                    error=(
+                        "你打开确认页之后，其中一张卡的原图已被更换，本次互换没有执行。"
+                        "本页已是最新状态，请核对当前原图后重新确认。"
+                    ),
+                    http_status=409,
+                )
+
+            now = utc_now()
+            swap_group = uuid.uuid4().hex
+            # Both cards are swapped and sent back to "waiting for entry" in a
+            # single transaction. Live entries are revoked (never prefilled or
+            # verified again); live adjudications are voided but kept.
+            db.execute(
+                """UPDATE entries
+                   SET voided_at = ?, voided_reason = 'image_swapped'
+                   WHERE voided_at IS NULL AND card_id IN (?, ?)""",
+                (now, card_a_id, card_b_id),
+            )
+            db.execute(
+                """UPDATE decisions
+                   SET voided_at = ?, voided_reason = 'image_swapped',
+                       voided_by_entry_id = NULL
+                   WHERE voided_at IS NULL AND card_id IN (?, ?)""",
+                (now, card_a_id, card_b_id),
+            )
+            # Card numbers and assigned clerks stay untouched; only the scans
+            # (and their version counters) move.
+            db.execute(
+                """UPDATE cards
+                   SET image_filename = ?, image_version = image_version + 1
+                   WHERE id = ?""",
+                (card_b["image_filename"], card_a_id),
+            )
+            db.execute(
+                """UPDATE cards
+                   SET image_filename = ?, image_version = image_version + 1
+                   WHERE id = ?""",
+                (card_a["image_filename"], card_b_id),
+            )
+            db.executemany(
+                """INSERT INTO image_swaps
+                   (swap_group, card_id, old_image_filename, new_image_filename,
+                    swapped_by, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        swap_group,
+                        card_a_id,
+                        card_a["image_filename"],
+                        card_b["image_filename"],
+                        g.user["id"],
+                        now,
+                    ),
+                    (
+                        swap_group,
+                        card_b_id,
+                        card_b["image_filename"],
+                        card_a["image_filename"],
+                        g.user["id"],
+                        now,
+                    ),
+                ],
+            )
+            db.commit()
+        except Exception:
+            if db.in_transaction:
+                db.rollback()
+            raise
+
+        flash(
+            f"已互换 {card_a['card_no']} 与 {card_b['card_no']} 的扫描原图。"
+            "两张卡已退回待录：旧录入作废不再预填，旧裁定已标为失效，"
+            "重新双录并核定后才会回到 CSV。",
+            "success",
+        )
+        return redirect(url_for("reviewer_dashboard"))
 
     @app.get("/reviewer/export.csv")
     @role_required("reviewer")
@@ -897,7 +1240,10 @@ def register_routes(app: Flask) -> None:
             )
         else:
             response = send_from_directory(app.config["UPLOAD_DIR"], stored)
-        response.headers["Cache-Control"] = "private, max-age=3600"
+        # no-cache (plus the ?v=image_version URLs used in templates) makes
+        # sure a refresh after a swap really shows the swapped-in scan instead
+        # of a cached copy of the old one.
+        response.headers["Cache-Control"] = "private, no-cache"
         return response
 
 

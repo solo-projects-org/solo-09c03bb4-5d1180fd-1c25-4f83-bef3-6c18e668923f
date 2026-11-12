@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}互换扫描原图 · 历史雨量档案{% endblock %}
+{% block content %}
+<div class="breadcrumb">
+  <a href="{{ url_for('reviewer_dashboard') }}">← 返回复核工作台</a>
+</div>
+
+{% if swap_error %}
+  <div class="decision-error" role="alert">
+    <strong>互换未执行</strong>
+    <span>{{ swap_error }}</span>
+  </div>
+{% endif %}
+
+<div class="page-heading compact">
+  <div>
+    <p class="eyebrow">SCAN SWAP</p>
+    <h1>互换两张卡的扫描原图</h1>
+    <p class="lead">对照下方两张扫描图上的档案号，确认它们互相挂反后再执行互换。</p>
+  </div>
+</div>
+
+<div class="inline-notice warning">
+  <strong>互换后两张卡同时退回待录。</strong>
+  卡号与分配的录入员不变；现有录入全部作废，不再预填、不再参与核定；有效裁定标为失效但保留记录。
+  两张卡重新双录并核定后，才会重新回到核定 CSV。
+</div>
+
+<form method="post" action="{{ url_for('swap_cards') }}" class="swap-form">
+  <input type="hidden" name="card_a_id" value="{{ card_rows[0].card.id }}">
+  <input type="hidden" name="card_b_id" value="{{ card_rows[1].card.id }}">
+  <input type="hidden" name="image_version_a" value="{{ card_rows[0].card.image_version }}">
+  <input type="hidden" name="image_version_b" value="{{ card_rows[1].card.image_version }}">
+
+  <div class="swap-layout">
+    {% for row in card_rows %}
+      <section class="swap-card">
+        <div class="panel-heading">
+          <h2>{{ row.card.card_no }}</h2>
+          <span class="status status-{{ row.info.status }}">{{ status_labels[row.info.status] }}</span>
+        </div>
+        <div class="scan-frame">
+          <img src="{{ url_for('card_image', card_id=row.card.id, v=row.card.image_version) }}" alt="卡片 {{ row.card.card_no }} 当前扫描图">
+        </div>
+        <dl class="swap-facts">
+          <div><dt>录入员</dt><dd>{{ row.card.clerk_a_name }} · {{ row.card.clerk_b_name }}</dd></div>
+          <div><dt>将作废</dt><dd>{{ row.live_entries }} 份录入{% if row.has_live_decision %}＋ 1 项有效裁定{% endif %}</dd></div>
+        </dl>
+      </section>
+      {% if loop.first %}
+        <div class="swap-arrow" aria-hidden="true">⇄</div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <div class="swap-action">
+    <div>
+      <strong>确认这两张卡的扫描图互相挂反？</strong>
+      <p>提交时系统会再次校验两张卡的原图版本；若期间原图已被更换，本次互换会被拒绝且不写入。</p>
+    </div>
+    <div class="swap-buttons">
+      <a class="button" href="{{ url_for('reviewer_dashboard') }}">取消</a>
+      <button type="submit" class="button button-danger">确认互换原图并退回待录</button>
+    </div>
+  </div>
+</form>
+{% endblock %}

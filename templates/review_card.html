@@ -48,10 +48,10 @@
   <section class="scan-panel sticky-scan">
     <div class="panel-heading">
       <h2>扫描原图</h2>
-      <a class="text-link" href="{{ url_for('card_image', card_id=card.id) }}" target="_blank" rel="noopener">查看大图 ↗</a>
+      <a class="text-link" href="{{ url_for('card_image', card_id=card.id, v=card.image_version) }}" target="_blank" rel="noopener">查看大图 ↗</a>
     </div>
     <div class="scan-frame">
-      <img src="{{ url_for('card_image', card_id=card.id) }}" alt="卡片 {{ card.card_no }} 的扫描原图">
+      <img src="{{ url_for('card_image', card_id=card.id, v=card.image_version) }}" alt="卡片 {{ card.card_no }} 的扫描原图">
     </div>
   </section>
 
@@ -69,6 +69,7 @@
           <input type="hidden" name="entry_a_revision" value="{{ entry_a.revision }}">
           <input type="hidden" name="entry_b_id" value="{{ entry_b.id }}">
           <input type="hidden" name="entry_b_revision" value="{{ entry_b.revision }}">
+          <input type="hidden" name="image_version" value="{{ card.image_version }}">
       {% endif %}
 
       <div class="table-wrap comparison-wrap">
@@ -128,7 +129,7 @@
           <div class="decision-action">
             <div>
               <strong>以扫描原图为准</strong>
-              <p>提交时系统会再次校验两份录入的版本。若期间有任何改填，旧页面上的裁定将被拒绝。</p>
+              <p>提交时系统会再次校验原图与两份录入的版本。若期间原图被更换或有任何改填，旧页面上的裁定将被拒绝。</p>
             </div>
             <button type="submit" class="button button-attention">核定所选录入</button>
           </div>
@@ -196,11 +197,44 @@
               <td>
                 {% if decision.voided_at %}
                   <span class="status status-voided">已失效</span>
-                  <div class="subtle">{{ decision.voided_at|short_dt }} · 录入改填</div>
+                  <div class="subtle">{{ decision.voided_at|short_dt }} · {{ void_reason_labels.get(decision.voided_reason, decision.voided_reason) }}</div>
                 {% else %}
                   <span class="status status-adjudicated">有效</span>
                 {% endif %}
               </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endif %}
+
+{% if swaps %}
+  <section class="history-section">
+    <div class="section-heading">
+      <h2>换图记录</h2>
+      <p>每次互换都会让当时的录入与裁定作废留痕，本卡退回待录后重新双录。</p>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table history-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>操作人</th>
+            <th>互换对象</th>
+            <th>换出扫描</th>
+            <th>换入扫描</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for swap in swaps %}
+            <tr>
+              <td>{{ swap.created_at|short_dt }}</td>
+              <td>{{ swap.swapped_by_name }}</td>
+              <td>{{ swap.other_card_no or '—' }}</td>
+              <td><code>{{ swap.old_image_filename }}</code></td>
+              <td><code>{{ swap.new_image_filename }}</code></td>
             </tr>
           {% endfor %}
         </tbody>
