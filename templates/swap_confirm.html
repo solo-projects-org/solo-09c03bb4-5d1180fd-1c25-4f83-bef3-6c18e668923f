@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}互换扫描原图 · 历史雨量档案{% endblock %}
+{% block content %}
+<div class="breadcrumb">
+  <a href="{{ url_for('reviewer_dashboard') }}">← 返回复核工作台</a>
+</div>
+
+{% if stale_error %}
+  <div class="decision-error" role="alert">
+    <strong>换图未执行 · 请刷新页面</strong>
+    <span>{{ stale_error }}</span>
+  </div>
+{% endif %}
+
+<div class="page-heading compact">
+  <div>
+    <p class="eyebrow">SCAN SWAP</p>
+    <h1>互换两张卡的扫描原图</h1>
+    <p class="lead">
+      对照下图确认：卡号与录入员保持不变，仅把两张卡挂反的扫描图换回正确卡号。
+      两张卡会同时换图并退回待录；旧录入留档停用、不预填不核定，旧裁定保留并标记失效。
+    </p>
+  </div>
+</div>
+
+<form method="post" action="{{ url_for('swap_execute') }}" class="swap-form">
+  <input type="hidden" name="card_a_id" value="{{ card_a.id }}">
+  <input type="hidden" name="card_b_id" value="{{ card_b.id }}">
+  <input type="hidden" name="card_a_version" value="{{ card_a.image_version }}">
+  <input type="hidden" name="card_b_version" value="{{ card_b.image_version }}">
+
+  <div class="swap-grid">
+    <article class="swap-card">
+      <div class="swap-card-head">
+        <h2>{{ card_a.card_no }}</h2>
+        <span class="revision">当前原图第 {{ card_a.image_version }} 版</span>
+      </div>
+      <div class="scan-frame">
+        <img src="{{ url_for('card_image', card_id=card_a.id, v=card_a.image_version) }}"
+             alt="卡片 {{ card_a.card_no }} 当前挂载的扫描原图">
+      </div>
+      <p class="hint">换图后将挂载 → <b>{{ card_b.card_no }}</b> 现在的原图</p>
+    </article>
+
+    <div class="swap-arrow" aria-hidden="true">⇄</div>
+
+    <article class="swap-card">
+      <div class="swap-card-head">
+        <h2>{{ card_b.card_no }}</h2>
+        <span class="revision">当前原图第 {{ card_b.image_version }} 版</span>
+      </div>
+      <div class="scan-frame">
+        <img src="{{ url_for('card_image', card_id=card_b.id, v=card_b.image_version) }}"
+             alt="卡片 {{ card_b.card_no }} 当前挂载的扫描原图">
+      </div>
+      <p class="hint">换图后将挂载 → <b>{{ card_a.card_no }}</b> 现在的原图</p>
+    </article>
+  </div>
+
+  <div class="decision-action">
+    <div>
+      <strong>提交前再次核对原图中的档案号</strong>
+      <p>提交时会校验两张卡的原图版本；若期间原图已被更换，本次换图将被拒绝并提示刷新，不会写入。</p>
+    </div>
+    <button type="submit" class="button button-attention">确认互换并退回待录</button>
+  </div>
+</form>
+{% endblock %}

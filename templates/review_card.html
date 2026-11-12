@@ -47,12 +47,15 @@
 <div class="split-layout review-layout">
   <section class="scan-panel sticky-scan">
     <div class="panel-heading">
-      <h2>扫描原图</h2>
-      <a class="text-link" href="{{ url_for('card_image', card_id=card.id) }}" target="_blank" rel="noopener">查看大图 ↗</a>
+      <h2>扫描原图 <span class="revision">第 {{ card.image_version }} 版</span></h2>
+      <a class="text-link" href="{{ url_for('card_image', card_id=card.id, v=card.image_version) }}" target="_blank" rel="noopener">查看大图 ↗</a>
     </div>
     <div class="scan-frame">
-      <img src="{{ url_for('card_image', card_id=card.id) }}" alt="卡片 {{ card.card_no }} 的扫描原图">
+      <img src="{{ url_for('card_image', card_id=card.id, v=card.image_version) }}" alt="卡片 {{ card.card_no }} 的扫描原图（第 {{ card.image_version }} 版）">
     </div>
+    {% if swaps %}
+      <p class="hint">本卡历史换图 {{ swaps|length }} 次，最近一次 {{ swaps[0].created_at|short_dt }}。</p>
+    {% endif %}
   </section>
 
   <section class="form-panel review-panel">
@@ -61,10 +64,18 @@
       <span class="subtle">红色标出不一致字段</span>
     </div>
 
+    {% if card.image_version > 1 or retired_count %}
+      <div class="inline-notice warning">
+        <strong>扫描原图已更换（当前第 {{ card.image_version }} 版），卡片已退回待录。</strong>
+        旧原图下的 {{ retired_count }} 份录入已留档停用，不预填、不参与核定；待两位录入员按新原图重录后，再按新版本核定。
+      </div>
+    {% endif %}
+
     {% if entry_a and entry_b %}
       {% set can_decide = info.status == 'conflict' and active is none %}
       {% if can_decide %}
         <form method="post" action="{{ url_for('decide_card', card_id=card.id) }}" class="decision-form">
+          <input type="hidden" name="image_version" value="{{ card.image_version }}">
           <input type="hidden" name="entry_a_id" value="{{ entry_a.id }}">
           <input type="hidden" name="entry_a_revision" value="{{ entry_a.revision }}">
           <input type="hidden" name="entry_b_id" value="{{ entry_b.id }}">
@@ -192,13 +203,57 @@
               <td>{{ decision.reviewer_name }}</td>
               <td>{{ decision.selected_clerk_name or '—' }}</td>
               <td>{{ decision.verified_station_no }} · {{ decision.verified_obs_date }} · <b>{{ decision.verified_rainfall_mm }}</b> mm</td>
-              <td>甲第 {{ decision.entry_a_revision }} 版 / 乙第 {{ decision.entry_b_revision }} 版</td>
+              <td>原图第 {{ decision.image_version }} 版 · 甲第 {{ decision.entry_a_revision }} 版 / 乙第 {{ decision.entry_b_revision }} 版</td>
               <td>
                 {% if decision.voided_at %}
                   <span class="status status-voided">已失效</span>
-                  <div class="subtle">{{ decision.voided_at|short_dt }} · 录入改填</div>
+                  <div class="subtle">
+                    {{ decision.voided_at|short_dt }} ·
+                    {% if decision.voided_reason == 'image_swapped' %}换图退回待录{% else %}录入改填{% endif %}
+                  </div>
                 {% else %}
                   <span class="status status-adjudicated">有效</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endif %}
+
+{% if swaps %}
+  <section class="history-section">
+    <div class="section-heading">
+      <h2>换图记录</h2>
+      <p>每次互换都原子作用于两张卡：卡号与录入员不变，仅交换扫描原图；两卡旧录入停用、旧裁定失效并退回待录。</p>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table history-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>操作复核员</th>
+            <th>互换卡片</th>
+            <th>本卡原图版本</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for swap in swaps %}
+            <tr>
+              <td>{{ swap.created_at|short_dt }}</td>
+              <td>{{ swap.reviewer_name }}</td>
+              <td>
+                <a href="{{ url_for('reviewer_card', card_id=swap.card_a_id) }}">{{ swap.card_a_no }}</a>
+                ⇄
+                <a href="{{ url_for('reviewer_card', card_id=swap.card_b_id) }}">{{ swap.card_b_no }}</a>
+              </td>
+              <td>
+                {% if swap.card_a_id == card.id %}
+                  第 {{ swap.card_a_version_before }} 版 → 第 {{ swap.card_a_version_after }} 版
+                {% else %}
+                  第 {{ swap.card_b_version_before }} 版 → 第 {{ swap.card_b_version_after }} 版
                 {% endif %}
               </td>
             </tr>

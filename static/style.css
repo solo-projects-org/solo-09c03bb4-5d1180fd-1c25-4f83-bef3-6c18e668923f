@@ -665,3 +665,84 @@ em { font-style: normal; }
   .comparison-table { min-width: 620px; }
   .page { width: calc(100% - 1.2rem); }
 }
+
+/* ---- Scan-swap workflow ---- */
+.swap-section {
+  margin: 1.2rem 0 1.6rem;
+  padding: 1.1rem 1.2rem 1.3rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.swap-pick-form { display: flex; flex-direction: column; gap: 0.9rem; }
+.swap-pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.swap-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-dim);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.swap-pick:hover { border-color: var(--green); background: var(--green-soft); }
+.swap-pick input { width: 1.1rem; height: 1.1rem; accent-color: var(--green); }
+.swap-pick .thumb {
+  width: 58px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+.swap-pick > span { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.swap-pick .primary-cell { font-weight: 600; }
+
+.swap-form { margin-top: 1rem; }
+.swap-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 1.2rem;
+  align-items: stretch;
+  margin: 1rem 0;
+}
+.swap-card {
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.swap-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.swap-card .scan-frame { margin: 0; }
+.swap-arrow {
+  align-self: center;
+  font-size: 2.2rem;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.retired-badge {
+  display: inline-block;
+  margin-top: 0.25rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border: 1px solid rgba(152, 96, 19, 0.25);
+}
+
+@media (max-width: 860px) {
+  .swap-grid { grid-template-columns: 1fr; }
+  .swap-arrow { transform: rotate(90deg); justify-self: center; }
+}

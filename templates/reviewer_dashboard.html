@@ -51,6 +51,28 @@
   {% endfor %}
 </section>
 
+<section class="swap-section">
+  <div class="section-heading">
+    <h2>挂反扫描图互换</h2>
+    <p>勾选正好两张卡，对照确认页核对原图中的档案号后再互换。换图只交换扫描图，卡号与录入员不变，两卡同时退回待录。</p>
+  </div>
+  <form method="get" action="{{ url_for('swap_confirm') }}" class="swap-pick-form">
+    <div class="swap-pick-grid">
+      {% for row in card_rows_all %}
+        <label class="swap-pick">
+          <input type="checkbox" name="card_id" value="{{ row.card.id }}">
+          <img class="thumb" src="{{ url_for('card_image', card_id=row.card.id, v=row.card.image_version) }}" alt="卡片 {{ row.card.card_no }} 扫描图">
+          <span>
+            <span class="primary-cell">{{ row.card.card_no }}</span>
+            <small class="subtle">原图第 {{ row.card.image_version }} 版{% if row.retired_count %} · {{ row.retired_count }} 份旧录入已停用{% endif %}</small>
+          </span>
+        </label>
+      {% endfor %}
+    </div>
+    <button type="submit" class="button button-primary">对照原图并确认互换</button>
+  </form>
+</section>
+
 {% if card_rows %}
   <div class="table-wrap">
     <table class="data-table review-table">
@@ -70,11 +92,14 @@
             <td>
               <div class="table-card-cell">
                 <a href="{{ url_for('reviewer_card', card_id=row.card.id) }}" class="thumb-link">
-                  <img class="thumb" src="{{ url_for('card_image', card_id=row.card.id) }}" alt="卡片 {{ row.card.card_no }} 扫描图">
+                  <img class="thumb" src="{{ url_for('card_image', card_id=row.card.id, v=row.card.image_version) }}" alt="卡片 {{ row.card.card_no }} 扫描图">
                 </a>
                 <span>
                   <span class="primary-cell">{{ row.card.card_no }}</span>
-                  <small class="subtle">{{ row.card.created_at|short_dt }}</small>
+                  <small class="subtle">{{ row.card.created_at|short_dt }} · 原图第 {{ row.card.image_version }} 版</small>
+                  {% if row.retired_count %}
+                    <small class="retired-badge">换图退回 · {{ row.retired_count }} 份旧录入已停用</small>
+                  {% endif %}
                 </span>
               </div>
             </td>

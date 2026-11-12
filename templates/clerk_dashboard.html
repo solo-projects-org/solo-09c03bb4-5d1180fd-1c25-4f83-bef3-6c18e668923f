@@ -31,12 +31,15 @@
           <tr>
             <td>
               <a href="{{ url_for('clerk_entry', card_id=row.card.id) }}" class="thumb-link">
-                <img class="thumb" src="{{ url_for('card_image', card_id=row.card.id) }}" alt="卡片 {{ row.card.card_no }} 扫描图">
+                <img class="thumb" src="{{ url_for('card_image', card_id=row.card.id, v=row.card.image_version) }}" alt="卡片 {{ row.card.card_no }} 扫描图">
               </a>
             </td>
             <td>
               <div class="primary-cell">{{ row.card.card_no }}</div>
               <div class="subtle">上传于 {{ row.card.created_at|short_dt }}</div>
+              {% if row.card.image_version > 1 %}
+                <div class="retired-badge">原图已更换 · 第 {{ row.card.image_version }} 版，退回待录</div>
+              {% endif %}
             </td>
             <td>
               {% if row.own_entry %}
